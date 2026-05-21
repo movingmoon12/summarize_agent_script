@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:42.244.33.107)",
+      "Bash(curl -s -o /tmp/type1.html -w \"HTTP_CODE:%{http_code}\\\\nSIZE:%{size_download}\\\\n\" --connect-timeout 10 \"http://42.244.33.107/defaultroot/SInformAction.do?action=init&type=1\")",
+      "Bash(curl -s -o /tmp/type2.html -w \"HTTP_CODE:%{http_code}\\\\nSIZE:%{size_download}\\\\n\" --connect-timeout 10 \"http://42.244.33.107/defaultroot/SInformAction.do?action=init&type=2\")",
+      "Bash(pip install *)",
+      "Bash(python scraper.py)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
