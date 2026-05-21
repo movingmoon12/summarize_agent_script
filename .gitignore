@@ -1,7 +1,10 @@
-# 隐藏单个文件
-.env.example
-.claude/
+# Python 缓存
 __pycache__/
-# 隐藏系统自动生成的垃圾文件
-.DS_Store
-Thumbs.db
+*.pyc
+*.pyo
+
+# 环境变量
+.env
+
+# Claude Code 配置
+.claude/
