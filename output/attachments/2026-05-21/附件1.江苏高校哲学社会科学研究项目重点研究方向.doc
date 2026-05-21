@@ -1,0 +1,20 @@
+
+<script LANGUAGE="JavaScript" src="/defaultroot/scripts/plugins/jquery/jquery.min.js"></script>
+<SCRIPT LANGUAGE="JavaScript" src="/defaultroot/scripts/util/cookie.js"></SCRIPT>
+<SCRIPT LANGUAGE="JavaScript">
+if(whirRootPath=='undefined' || whirRootPath=='' || whirRootPath=='nullss'){
+	var whirRootPath = '/defaultroot';
+}
+
+var ezofficeUserPortal_ = Cookie("ezofficeUserPortal");
+var reLogin_ = "/defaultroot/login.jsp?errorType=overtime";
+if(ezofficeUserPortal_=='1'){
+    reLogin_ = "/defaultroot/portal.jsp?_portal_logout=1";
+}
+if(opener){
+    opener.parent.window.location=reLogin_;
+    window.close();
+}else{	
+    top.window.location=reLogin_;
+}
+</SCRIPT>

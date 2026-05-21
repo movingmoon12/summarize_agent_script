@@ -13,8 +13,8 @@
   - 提取失败不阻断流程，返回空字符串并记录警告。
 ===============================================================================
 """
-
 import gc
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -193,67 +193,449 @@ def process_type2_pdfs(
 # Type 1 详情页 HTML 正文解析
 # =============================================================================
 
-def parse_type1_detail(tree) -> str:
+def parse_type1_detail(tree) -> dict:
     """
-    从 type=1 详情页的 lxml 树中提取正文纯文本。
+    从 type=1 详情页的 lxml 树中提取全部可用信息。
 
-    提取策略（按优先级尝试）：
+    返回一个富 dict，包含：
+      - text:           位置感知的正文纯文本（图片/表格/附件在原文位置插入标记）
+      - images:         正文内图片列表 [{src, alt, title}, ...]
+      - tables:         Markdown 格式的表格列表
+      - attachments_meta: 附件元信息 [{original_name, save_name}, ...]
+
+    文本提取策略（按优先级尝试）：
       1. 用 config.TYPE1_DETAIL_CONTENT_XPATH 定位正文容器
       2. 失败则尝试 3 个常见备选 XPath
-      3. 最低回退：提取 <body> 下所有文本（噪音较多但能兜底）
+      3. 最终回退：提取 body 下所有非脚本/样式文本
 
-    使用 lxml 的 string() 或 //text() 获取节点下所有文本，
-    清洗后返回。
+    位置感知策略（服务于 LLM 摘要）：
+      不再使用 text_content() 一通碾平，而是：
+        1. 先将正文容器内的 <img> 替换为 [图片: url] 标记
+        2. 将 <table> 替换为 Markdown 表格（位于原位置）
+        3. 再去掉剩余 HTML 标签得到纯文本
+        4. 末尾追加 [附件] 区域
+      这样 LLM 可以根据图片/表格在原文中的位置理解其语境，
+      而不是孤立地看到一串图片 URL 和一串文本。
 
     Args:
         tree: lxml HtmlElement（由 scraper.fetch_page 返回）
 
     Returns:
-        纯文本正文；提取失败返回 ""
+        {"text": "...", "images": [...], "tables": [...], "attachments_meta": [...]}
     """
-    # 首选 XPath
-    parts = tree.xpath(config.TYPE1_DETAIL_CONTENT_XPATH)
-    text = _clean_text(parts)
-    if len(text) > 50:
-        return text
+    # ——— 定位正文容器元素 ———
+    candidate_xpaths = [
+        config.TYPE1_DETAIL_CONTENT_XPATH,
+        "//td[@class='_c']",
+        "//div[@class='content']",
+        "//div[@id='content']",
+    ]
 
-    # 备选 XPath（按优先级递减）
-    for fb_xpath in [
-        "//td[@class='_c']//text()",
-        "//div[@class='content']//text()",
-        "//div[@id='content']//text()",
-    ]:
-        parts = tree.xpath(fb_xpath)
-        text = _clean_text(parts)
-        if len(text) > 50:
-            return text
+    content_elem = None
+    for xp in candidate_xpaths:
+        elems = tree.xpath(xp)
+        if elems:
+            content_elem = elems[0]
+            if len(content_elem.text_content().strip()) > 50:
+                break
+            else:
+                content_elem = None
 
-    # 最终回退：提取 body 下所有文本，排除 script 和 style
-    parts = tree.xpath("//body//*[not(self::script) and not(self::style)]//text()")
-    return _clean_text(parts)
+    # ——— 先提取图片和表格（用于后续位置替换） ———
+    images = detect_images_from_elem(content_elem) if content_elem is not None else []
+    tables = extract_tables(content_elem) if content_elem is not None else []
+    attachments_meta = extract_attachments_meta(tree)
+
+    # ——— 构建位置感知的文本 ———
+    text = ""
+    if content_elem is not None:
+        text = _build_positioned_text(content_elem, images, tables, attachments_meta)
+
+    if len(text) < 50:
+        # 最终回退：提取 body 下所有非脚本/样式元素的文本
+        elems = tree.xpath(
+            "//body//*[not(self::script) and not(self::style)]"
+        )
+        if elems:
+            seen = set()
+            parts = []
+            for el in elems:
+                txt = el.text_content().strip()
+                if txt and txt not in seen:
+                    seen.add(txt)
+                    parts.append(txt)
+            text = "\n".join(parts)
+
+    return {
+        "text": text,
+        "images": images,
+        "tables": tables,
+        "attachments_meta": attachments_meta,
+    }
 
 
-def _clean_text(parts: list[str]) -> str:
+def _build_positioned_text(
+    content_elem,
+    images: list[dict],
+    tables: list[str],
+    attachments_meta: list[dict],
+) -> str:
     """
-    清洗 XPath 提取的文本片段列表。
+    构建位置感知的纯文本：将图片和表格按原文位置嵌入文本流中。
 
-    操作：
-      1. 逐条 strip 空白
-      2. 过滤掉只有空白/标点的碎片
-      3. 用换行拼接
+    策略：
+      1. 将正文容器的子元素序列化为 HTML 字符串
+      2. 用正则将 <img ...> 替换为 [图片: url]（位于原文位置）
+      3. 用正则将 <table>...</table> 替换为 Markdown 表格（位于原文位置）
+      4. 去除剩余 HTML 标签，清洗空白
+      5. 末尾追加 [附件] 区域
+
+    为什么不用 text_content()？
+      text_content() 把所有后代文本无差别拼接，丢失了：
+        - 图片在哪个段落之间（"如下图"失去了参照物）
+        - 表格在文中何处（表格前后的说明文字失去了联系）
+      位置感知文本让 LLM 能理解"这张图在讲什么""这个表属于哪个章节"。
 
     Args:
-        parts: tree.xpath("...//text()") 返回的字符串列表
+        content_elem: lxml HtmlElement（正文容器元素）
+        images: detect_images_from_elem() 的返回值
+        tables: extract_tables() 的返回值（Markdown 表格字符串列表）
+        attachments_meta: extract_attachments_meta() 的返回值
 
     Returns:
-        清洗后的纯文本
+        位置感知的纯文本字符串
     """
-    cleaned = []
-    for p in parts:
-        s = p.strip()
-        if s and len(s) > 1:  # 丢弃单字符碎片（通常是标点或分隔符残留）
-            cleaned.append(s)
-    return "\n".join(cleaned)
+    from lxml import etree
+
+    # ——— 1. 获取正文容器的 inner HTML ———
+    inner_parts = []
+    for child in content_elem:
+        inner_parts.append(
+            etree.tostring(child, encoding="unicode", method="html")
+        )
+    inner_html = "".join(inner_parts)
+    if not inner_html.strip():
+        # 没有子元素的情况：直接用 text_content 兜底
+        return _fallback_positioned_text(content_elem, images, tables, attachments_meta)
+
+    # ——— 2. 替换 <img> → [图片: url] ———
+    # 使用计数器与 images 列表一一配对（两者均为文档序，保证顺序一致）
+    img_idx = [0]
+
+    def _replace_img(match: re.Match) -> str:
+        if img_idx[0] < len(images):
+            src = images[img_idx[0]]["src"]
+            alt = images[img_idx[0]].get("alt", "")
+            img_idx[0] += 1
+            alt_suffix = f" ({alt})" if alt else ""
+            return f"\n\n[图片{alt_suffix}: {src}]\n\n"
+        return ""
+
+    inner_html = re.sub(r"<img[^>]*/?>", _replace_img, inner_html)
+
+    # ——— 3. 替换 <table>...</table> → [表格] + Markdown ———
+    tbl_idx = [0]
+
+    def _replace_table(match: re.Match) -> str:
+        if tbl_idx[0] < len(tables):
+            md = tables[tbl_idx[0]]
+            tbl_idx[0] += 1
+            return f"\n\n[表格]\n{md}\n\n"
+        # 非数据表（如含图片的排版用 <table>）→ 剥掉表格标签，保留内容
+        # 避免把上一步已插入的 [图片: ...] 标记一起清空
+        content = match.group(0)
+        content = re.sub(r"</?table[^>]*>", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"</?(?:tbody|thead|tfoot|colgroup|tr|td|th)[^>]*>", "", content, flags=re.IGNORECASE)
+        return content
+
+    inner_html = re.sub(
+        r"<table[^>]*>.*?</table>",
+        _replace_table,
+        inner_html,
+        flags=re.DOTALL,
+    )
+
+    # ——— 4. 去除剩余 HTML 标签 & HTML 实体 ———
+    text = re.sub(r"<[^>]+>", "", inner_html)
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&lt;", "<")
+    text = text.replace("&gt;", ">")
+    text = text.replace("&amp;", "&")
+
+    # ——— 5. 清洗空白 ———
+    text = _clean_whitespace(text)
+
+    # ——— 6. 末尾追加 [附件] 区域 ———
+    if attachments_meta:
+        text += "\n\n[附件]"
+        for att in attachments_meta:
+            text += f"\n- {att['original_name']}"
+
+    return text
+
+
+def _fallback_positioned_text(
+    content_elem,
+    images: list[dict],
+    tables: list[str],
+    attachments_meta: list[dict],
+) -> str:
+    """
+    当正文容器没有子元素时的回退方案：直接用 text_content() 取文本，
+    然后将图片/表格/附件追加到末尾。
+    """
+    text = _clean_whitespace(content_elem.text_content())
+
+    if images:
+        text += "\n\n[图片]"
+        for img in images:
+            alt = f" ({img['alt']})" if img.get("alt") else ""
+            text += f"\n- {img['src']}{alt}"
+
+    if tables:
+        for i, tbl in enumerate(tables):
+            text += f"\n\n[表格 {i + 1}]\n{tbl}"
+
+    if attachments_meta:
+        text += "\n\n[附件]"
+        for att in attachments_meta:
+            text += f"\n- {att['original_name']}"
+
+    return text
+
+
+def _clean_whitespace(text: str) -> str:
+    """
+    清洗文本中的多余空白。
+
+    操作：
+      1. 将连续空白符（空格、制表符）压缩为单个空格
+      2. 将 3 个以上连续换行压缩为双换行（保留段落分隔）
+      3. 去除首尾空白
+    """
+    # 压缩行内空白
+    text = re.sub(r'[ \t]+', ' ', text)
+    # 压缩过多连续换行（保留最多双换行作为段落分隔）
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+# =============================================================================
+# 正文图片检测（在正文容器内搜索，避免匹配到页面装饰图）
+# =============================================================================
+
+def detect_images_from_elem(content_elem) -> list[dict]:
+    """
+    在正文容器元素内检测图片，提取 src / alt / title。
+
+    使用相对 XPath（.//img）在 content_elem 内搜索，而非全文搜索，
+    避免误匹配到页面头部/底部的装饰图片。
+
+    src 为相对路径时自动拼接 config.BASE_URL 为绝对 URL。
+
+    重要限制：
+      纯文本提取无法获取图片的视觉内容（如流程图、图表、照片）。
+      此函数仅报告图片存在，供调用方在最终报告中标注，
+      提醒用户人工查看原文中的图片/附件。
+
+    Args:
+        content_elem: lxml HtmlElement（正文容器元素）
+
+    Returns:
+        [{src, alt, title}, ...] 列表，无图片返回空列表
+    """
+    images = []
+    # .//img 表示在 content_elem 后代中搜索所有 img 标签
+    for img in content_elem.xpath(".//img"):
+        src = (img.get("src") or "").strip()
+        if not src:
+            continue
+        images.append({
+            "src": src if src.startswith("http") else config.BASE_URL + src,
+            "alt": (img.get("alt") or "").strip(),
+            "title": (img.get("title") or "").strip(),
+        })
+    return images
+
+
+# 保留旧函数签名的兼容性包装（供可能已有的外部调用）
+def detect_images(tree) -> list[dict]:
+    """
+    旧版兼容接口：在整个 tree 中搜索 <td id="content"> 下的图片。
+
+    新代码请优先使用 detect_images_from_elem(content_elem)，
+    避免将 XPath 硬编码在函数体内。
+
+    Args:
+        tree: lxml HtmlElement（整棵 DOM 树）
+
+    Returns:
+        [{src, alt, title}, ...] 列表
+    """
+    content_elems = tree.xpath("//td[@id='content']")
+    if content_elems:
+        return detect_images_from_elem(content_elems[0])
+    return []
+
+
+# =============================================================================
+# HTML 表格 → Markdown 表格（逐行逐列有序提取，不碾平结构）
+# =============================================================================
+
+def extract_tables(content_elem) -> list[str]:
+    """
+    在正文容器内检测 HTML <table>，逐行逐列提取单元格文本，
+    转换为 Markdown 格式的表格字符串。
+
+    XPath 选取逻辑：
+      1. .//table 定位正文内所有表格（相对路径，只搜正文容器后代）
+      2. ./tr 或 .//tr 遍历每一行（含 thead/tbody 嵌套）
+      3. ./td | ./th 提取每个单元格的 text_content()
+
+    设计理由：
+      直接用 text_content() 会把表格碾平为无分隔符的连续文本
+      （如 "姓名性别所在单位沈纲祥男电子信息学院"），完全不可读。
+      逐行逐列提取可以保留表格原有的二维结构。
+
+    兼容性：
+      - 自动跳过只有 1 行或 1 列的退化表格（可能是排版用表格）
+      - 单元格内嵌的 <span>、<p> 等通过 text_content() 拼接保留数字
+
+    Args:
+        content_elem: lxml HtmlElement（正文容器元素）
+
+    Returns:
+        Markdown 表格字符串列表，无表格返回空列表
+    """
+    md_tables = []
+    for table_elem in content_elem.xpath(".//table"):
+        rows = []
+        # 遍历所有行（兼容 thead/tbody 嵌套）
+        for tr in table_elem.xpath(".//tr"):
+            cells = []
+            for cell in tr.xpath("./td | ./th"):
+                # text_content() 保留单元格内嵌套文本的数字和顺序
+                cell_text = cell.text_content().strip()
+                cells.append(cell_text)
+            if cells:
+                rows.append(cells)
+
+        # 跳过退化表格（只有 1 行或 1 列的可能是分栏排版）
+        if len(rows) < 2 or (rows and len(rows[0]) < 2):
+            continue
+
+        md_tables.append(_table_to_markdown(rows))
+
+    return md_tables
+
+
+def _table_to_markdown(rows: list[list[str]]) -> str:
+    """
+    将二维列表转换为 Markdown 表格字符串。
+
+    自动对齐：取每列最大宽度（中文字符按 2 个 ASCII 字符宽度计算），
+    用空格填充使表格在等宽字体下对齐。
+
+    Args:
+        rows: 第一行为表头，后续行为数据行
+
+    Returns:
+        Markdown 格式表格字符串
+    """
+    if not rows:
+        return ""
+
+    # 计算每列的显示宽度（中文字符约占 2 个 ASCII 宽度）
+    def _display_width(s: str) -> int:
+        w = 0
+        for ch in s:
+            if '一' <= ch <= '鿿' or '　' <= ch <= '〿' or '＀' <= ch <= '￯':
+                w += 2
+            else:
+                w += 1
+        return w
+
+    col_count = max(len(r) for r in rows)
+    col_widths = [0] * col_count
+
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], _display_width(cell))
+
+    def _pad_cell(cell: str, width: int) -> str:
+        """用空格填充单元格到指定显示宽度。"""
+        current = _display_width(cell)
+        return cell + ' ' * (width - current)
+
+    lines = []
+    # 表头行
+    header = rows[0]
+    padded_header = [_pad_cell(header[i], col_widths[i]) for i in range(len(header))]
+    lines.append('| ' + ' | '.join(padded_header) + ' |')
+
+    # 分隔行（用 --- 填充每列）
+    sep_cells = ['-' * col_widths[i] for i in range(col_count)]
+    lines.append('| ' + ' | '.join(sep_cells) + ' |')
+
+    # 数据行
+    for row in rows[1:]:
+        padded = [_pad_cell(row[i], col_widths[i]) for i in range(len(row))]
+        lines.append('| ' + ' | '.join(padded) + ' |')
+
+    return '\n'.join(lines)
+
+
+# =============================================================================
+# 附件元信息提取（从 hidden input 读取，不做 HTTP 请求）
+# =============================================================================
+
+def extract_attachments_meta(tree) -> list[dict]:
+    """
+    从详情页 DOM 树中提取附件元信息。
+
+    附件在该校 CMS 系统中的存储机制：
+      1. 原始文件名存入 <input id="infoPicName"> → value 中用 "|" 分隔
+      2. 服务器存储名存入 <input id="infoPicSaveName"> → value 中用 "|" 分隔
+      3. 下载链接需用存储名调 getFileInfo.jsp 获取 dlcode 后拼接
+         （HTTP 调用部分在 scraper.resolve_attachment_urls() 中完成）
+
+    XPath 选取逻辑：
+      //input[@id='infoPicName']/@value → 原始文件名列表
+      //input[@id='infoPicSaveName']/@value → 存储文件名列表
+      两者一一对应，按顺序 zip。
+
+    注意：
+      infoPicName 虽然名字带 "Pic"，但实际承载所有附件类型
+      （.doc, .docx, .xls, .xlsx, .pdf, .rar, .zip 等），
+      不仅仅是图片。这是该 CMS 的历史遗留命名问题。
+
+    Args:
+        tree: lxml HtmlElement（整棵 DOM 树）
+
+    Returns:
+        [{original_name, save_name}, ...] 列表，无附件返回空列表
+    """
+    # 读取原始文件名列表
+    orig_vals = tree.xpath("//input[@id='infoPicName']/@value")
+    if not orig_vals or not orig_vals[0].strip():
+        return []
+    original_names = [n.strip() for n in orig_vals[0].split("|") if n.strip()]
+
+    # 读取存储文件名列表
+    save_vals = tree.xpath("//input[@id='infoPicSaveName']/@value")
+    save_names = []
+    if save_vals and save_vals[0].strip():
+        save_names = [n.strip() for n in save_vals[0].split("|") if n.strip()]
+
+    # 按位置 zip（如果数量不一致，以较短的为准）
+    attachments = []
+    for i, orig_name in enumerate(original_names):
+        save_name = save_names[i] if i < len(save_names) else ""
+        attachments.append({
+            "original_name": orig_name,
+            "save_name": save_name,
+        })
+    return attachments
 
 
 # =============================================================================
@@ -262,32 +644,117 @@ def _clean_text(parts: list[str]) -> str:
 
 if __name__ == "__main__":
     """
-    快速自测：下载 type=2 第一条通知的 PDF 并提取文本。
+    完整自测：对 3 条代表性通知分别测试 图片/表格/附件 的检测与提取。
+
+    输出目录结构：
+      output/
+      ├── 0521_image_test/       # 图片检测（editId=40216468）
+      │   ├── original.html      原始 HTML
+      │   ├── extracted_text.txt 提取的纯文本正文
+      │   └── images.json        图片列表 + 下载验证结果
+      ├── 0521_table_test/       # 表格提取（editId=40214854）
+      │   ├── original.html
+      │   ├── extracted_text.txt
+      │   └── tables.md          Markdown 表格
+      └── 0521_attachment_test/  # 附件提取（editId=40219215）
+          ├── original.html
+          ├── extracted_text.txt
+          └── attachments.json   附件列表 + 下载链接验证结果
 
     使用方法：
       python parser.py
     """
-    from scraper import fetch_type2_list, _write_debug
+    import json
+    from scraper import fetch_page, resolve_attachment_urls
 
     target = config.TARGET_DATE
-    print(f"Parser 模块自测 — 目标日期: {target}")
+    date_tag = target.strftime("%m%d")  # e.g. "0521"
+    base_dir = Path(config.PROJECT_ROOT) / "output"
 
-    # 获取 type=2 通知列表（取第一条测试 PDF 提取）
-    notices = fetch_type2_list(target)
-    if not notices:
-        print(f"  无 {target} 的学校发文，跳过测试")
-    else:
-        print(f"  共 {len(notices)} 条学校发文，测试第一条...")
-        processed = process_type2_pdfs(notices[:1], str(target))
-        n = processed[0]
-        preview = n.get("raw_text", "")[:500]
+    # =========================================================================
+    # 辅助函数
+    # =========================================================================
 
-        result = (
-            f"标题: {n['title']}\n"
-            f"编号: {n['number']}\n"
-            f"PDF: {n['pdf_url']}\n"
-            f"提取字符数: {len(n.get('raw_text', ''))}\n"
-            f"--- 前 500 字符 ---\n{preview}"
-        )
-        _write_debug("debug_parser.txt", result)
-        print(f"  提取完成，结果写入 output/debug_parser.txt")
+    def _save(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _fetch_detail(edit_id: str):
+        """拉取详情页 HTML 树。"""
+        url = config.BASE_URL + config.TYPE1_DETAIL_URL_TEMPLATE.format(edit_id=edit_id)
+        tree = fetch_page(url)
+        # 同时保存原始 HTML 供人工核查
+        from lxml import etree
+        html_str = etree.tostring(tree, encoding="unicode", pretty_print=True)
+        return tree, html_str, url
+
+    # =========================================================================
+    # 测试 1: 图片通知（群团赋能讲座，含腾讯会议二维码图）
+    # =========================================================================
+    print("=" * 60)
+    print(f"测试 1/3: 图片检测 (editId=40216468)")
+    test_dir = base_dir / f"{date_tag}_image_test"
+    tree1, raw_html1, url1 = _fetch_detail("40216468")
+    parsed1 = parse_type1_detail(tree1)
+
+    _save(test_dir / "original.html", raw_html1)
+    _save(test_dir / "extracted_text.txt", parsed1["text"])
+    _save(test_dir / "images.json", json.dumps(parsed1["images"], ensure_ascii=False, indent=2))
+
+    print(f"  正文: {len(parsed1['text'])} 字符  → {test_dir / 'extracted_text.txt'}")
+    print(f"  图片: {len(parsed1['images'])} 张   → {test_dir / 'images.json'}")
+    print(f"  表格: {len(parsed1['tables'])} 个")
+    print(f"  附件: {len(parsed1['attachments_meta'])} 个")
+
+    # =========================================================================
+    # 测试 2: 表格通知（出国人员公示，含人员信息表格）
+    # =========================================================================
+    print("=" * 60)
+    print(f"测试 2/3: 表格提取 (editId=40214854)")
+    test_dir2 = base_dir / f"{date_tag}_table_test"
+    tree2, raw_html2, url2 = _fetch_detail("40214854")
+    parsed2 = parse_type1_detail(tree2)
+
+    _save(test_dir2 / "original.html", raw_html2)
+    _save(test_dir2 / "extracted_text.txt", parsed2["text"])
+    if parsed2["tables"]:
+        _save(test_dir2 / "tables.md", "\n\n".join(parsed2["tables"]))
+
+    print(f"  正文: {len(parsed2['text'])} 字符  → {test_dir2 / 'extracted_text.txt'}")
+    print(f"  图片: {len(parsed2['images'])} 张")
+    print(f"  表格: {len(parsed2['tables'])} 个   → {test_dir2 / 'tables.md'}")
+    print(f"  附件: {len(parsed2['attachments_meta'])} 个")
+
+    # =========================================================================
+    # 测试 3: 附件通知（社科项目申报，含 7 个 doc/xls/docx 附件）
+    # =========================================================================
+    print("=" * 60)
+    print(f"测试 3/3: 附件提取 (editId=40219215)")
+    test_dir3 = base_dir / f"{date_tag}_attachment_test"
+    tree3, raw_html3, url3 = _fetch_detail("40219215")
+    parsed3 = parse_type1_detail(tree3)
+
+    _save(test_dir3 / "original.html", raw_html3)
+    _save(test_dir3 / "extracted_text.txt", parsed3["text"])
+
+    # 解析附件下载链接（传入详情页 URL 作为备用下载入口）
+    attachments = resolve_attachment_urls(
+        parsed3["attachments_meta"],
+        detail_page_url=url3,
+    )
+    _save(test_dir3 / "attachments.json",
+          json.dumps(attachments, ensure_ascii=False, indent=2))
+
+    print(f"  正文: {len(parsed3['text'])} 字符  → {test_dir3 / 'extracted_text.txt'}")
+    print(f"  图片: {len(parsed3['images'])} 张")
+    print(f"  表格: {len(parsed3['tables'])} 个")
+    print(f"  附件: {len(attachments)} 个   → {test_dir3 / 'attachments.json'}")
+
+    # =========================================================================
+    # 汇总
+    # =========================================================================
+    print("=" * 60)
+    print("所有自测完成。输出目录：")
+    print(f"  {test_dir}")
+    print(f"  {test_dir2}")
+    print(f"  {test_dir3}")

@@ -338,13 +338,14 @@ def download_pdf(
     流式下载 PDF 到本地。
 
     若文件已存在则跳过下载（幂等）。
+    若未传入 session，则自动创建并访问列表页获取 OASESSIONID Cookie。
 
     Args:
         pdf_url:  PDF 完整 URL
         save_dir: 保存目录
         filename: 保存文件名
         session:  可选的 requests.Session（用于维持 Cookie 鉴权）。
-                  不传则创建临时 Session。
+                  不传则自动创建并鉴权。
 
     Returns:
         保存后的完整路径，失败返回 None
@@ -355,9 +356,16 @@ def download_pdf(
     if filepath.exists():
         return str(filepath)
 
+    own_session = False
     if session is None:
         session = requests.Session()
         session.headers.update(config.HEADERS)
+        own_session = True
+        # 先访问列表页获取 OASESSIONID Cookie，否则 download.jsp 返回 HTML 登录页
+        try:
+            session.get(config.TYPE2_LIST_URL, timeout=config.REQUEST_TIMEOUT)
+        except requests.RequestException:
+            pass
 
     for attempt in range(config.MAX_RETRIES + 1):
         try:
@@ -367,53 +375,277 @@ def download_pdf(
                 stream=True,
             )
             resp.raise_for_status()
+
+            # 用 iter_content 迭代器取第一个 chunk 做 HTML 防御检查
+            # 不能用 resp.raw.read()——那会破坏 iter_content 的内部缓冲状态
+            chunk_iter = resp.iter_content(chunk_size=8192)
+            try:
+                first_chunk = next(chunk_iter)
+            except StopIteration:
+                if own_session:
+                    session.close()
+                return None
+
+            if (
+                first_chunk
+                and (first_chunk[:6] == b"\r\n<scr"
+                     or first_chunk[:7] == b"<script"
+                     or first_chunk[:6] == b"<html>"
+                     or first_chunk[:6] == b"<HTML>")
+            ):
+                # 鉴权失败，服务器返回的是登录重定向页面
+                if own_session:
+                    session.close()
+                return None
+
+            # 流式写入
             with open(filepath, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
+                f.write(first_chunk)
+                for chunk in chunk_iter:
                     if chunk:
                         f.write(chunk)
             return str(filepath)
+
         except requests.RequestException:
             if attempt < config.MAX_RETRIES:
                 time.sleep(config.RETRY_BACKOFF * (2 ** attempt))
             else:
+                if own_session:
+                    session.close()
                 return None
+
+    if own_session:
+        session.close()
+    return None
 
 
 # =============================================================================
 # Type 1 详情页
 # =============================================================================
 
-def fetch_detail_content(detail_url: str) -> str:
+def fetch_and_parse_detail(detail_url: str) -> dict:
     """
-    抓取 type=1 通知详情页的正文纯文本。
+    抓取 type=1 通知的详情页，返回 parser.parse_type1_detail() 的富 dict。
 
-    先用 config.TYPE1_DETAIL_CONTENT_XPATH 提取；
-    若失败则尝试 3 个常见备选 XPath。
-    返回空字符串表示提取失败。
+    设计理由：
+      scraper 只负责 HTTP 请求（fetch_page），解析逻辑全在 parser.py。
+      之前的 fetch_detail_content() 在 scraper 中直接调用 xpath 并用
+      p.strip() 处理 HtmlElement 对象，有致命 bug（HtmlElement 没有 .strip() 方法）。
+      现在改为委托 parser.parse_type1_detail()，职责清晰。
+
+    Args:
+        detail_url: 详情页完整 URL
+
+    Returns:
+        parser.parse_type1_detail() 的返回值：
+        {"text": "...", "images": [...], "tables": [...], "attachments_meta": [...]}
+        请求失败时返回空 dict（所有字段为空字符串/空列表）
     """
+    from parser import parse_type1_detail
+
     try:
         tree = fetch_page(detail_url)
-
-        # 首选 XPath
-        parts = tree.xpath(config.TYPE1_DETAIL_CONTENT_XPATH)
-        text = "\n".join(p.strip() for p in parts if p.strip())
-        if len(text) > 50:
-            return text
-
-        # 备选 XPath
-        for fb in [
-            "//div[@class='content']//text()",
-            "//div[@class='article']//text()",
-            "//td//text()",
-        ]:
-            parts = tree.xpath(fb)
-            text = "\n".join(p.strip() for p in parts if p.strip())
-            if len(text) > 50:
-                return text
-
-        return ""
+        return parse_type1_detail(tree)
     except RuntimeError:
-        return ""
+        return {"text": "", "images": [], "tables": [], "attachments_meta": []}
+
+
+# =============================================================================
+# 附件下载链接解析（调用 getFileInfo.jsp 获取 dlcode）
+# =============================================================================
+
+def resolve_attachment_urls(
+    attachments_meta: list[dict],
+    detail_page_url: str = "",
+    session: Optional[requests.Session] = None,
+) -> list[dict]:
+    """
+    对 parser.extract_attachments_meta() 返回的附件列表，
+    逐条调用 /defaultroot/public/upload/uploadify/getFileInfo.jsp
+    获取 dlcode（verifyCode），拼接完整下载 URL。
+
+    请求格式：
+      GET /defaultroot/public/upload/uploadify/getFileInfo.jsp
+        ?saveFileName={save_name}&date={random}
+
+    响应格式（JavaScript 风格 JSON）：
+      {'saveFileName':'...','accLongSize':14848,'dlcode':'1EB04593E3FileName00',...}
+
+    拼接的下载 URL 格式：
+      /defaultroot/public/download/download.jsp
+        ?verifyCode={dlcode}&FileName={save_name}&path=customform&name={url_encoded_original_name}
+
+    重要：name 参数是必须的！缺少 name 参数时 download.jsp 返回空 HTML 或 404。
+    经 2026-05-21 实测验证：加 name 参数后 GET 返回 200 + 真实文件字节流。
+
+    浏览器下载注意事项：
+      download.jsp 的 GET 请求不返回 Content-Disposition 响应头，
+      浏览器可能不会自动触发下载（而是尝试内联显示或重定向）。
+      POST 请求返回附件头（实测 Content-Disposition: attachment）。
+      因此，最终报告中建议以 detail_page_url（详情页）为主链接，
+      用户点击后在详情页上使用系统自带的下载按钮（POST 方式）。
+      download_url 可作为右键另存的备用链接。
+
+    Args:
+        attachments_meta: parser.extract_attachments_meta() 返回的列表
+        detail_page_url: 通知详情页 URL（作为主要下载入口，可选）
+        session: 可选的 requests.Session（复用 Cookie）
+
+    Returns:
+        同 attachments_meta，但每个 dict 增加了字段：
+          - download_url:      直接下载链接（GET 方式，需登录态，建议右键另存）
+          - detail_page_url:   详情页 URL（推荐：用户点击后在页面内下载）
+          - size_bytes:        文件大小（字节，解析失败则为 0）
+    """
+    from urllib.parse import quote
+
+    own_session = False
+    if session is None:
+        session = requests.Session()
+        session.headers.update(config.HEADERS)
+        own_session = True
+        # 先访问列表页获取 OASESSIONID Cookie（download.jsp 鉴权依赖）
+        try:
+            session.get(config.TYPE1_LIST_URL, timeout=config.REQUEST_TIMEOUT)
+        except requests.RequestException:
+            pass
+
+    for att in attachments_meta:
+        save_name = att.get("save_name", "")
+        original_name = att.get("original_name", "")
+        att["detail_page_url"] = detail_page_url  # 所有附件共享同一个详情页 URL
+        if not save_name:
+            att["download_url"] = None
+            att["size_bytes"] = 0
+            continue
+
+        try:
+            resp = session.get(
+                f"{config.BASE_URL}/defaultroot/public/upload/uploadify/getFileInfo.jsp",
+                params={"saveFileName": save_name, "date": str(int(time.time()))},
+                timeout=config.REQUEST_TIMEOUT,
+            )
+            resp.encoding = "utf-8"
+
+            # 响应体是 JavaScript 风格 JSON（单引号），用正则提取 dlcode
+            dlcode_match = re.search(r"'dlcode'\s*:\s*'([^']+)'", resp.text)
+            size_match = re.search(r"'accLongSize'\s*:\s*(\d+)", resp.text)
+
+            if dlcode_match:
+                dlcode = dlcode_match.group(1)
+                # name 参数是必须的（经实测验证），用 URL 编码处理中文文件名
+                name_param = quote(original_name, safe='') if original_name else save_name
+                att["download_url"] = (
+                    f"{config.BASE_URL}/defaultroot/public/download/download.jsp"
+                    f"?verifyCode={dlcode}"
+                    f"&FileName={save_name}"
+                    f"&path=customform"
+                    f"&name={name_param}"
+                )
+            else:
+                att["download_url"] = None
+
+            att["size_bytes"] = int(size_match.group(1)) if size_match else 0
+
+        except requests.RequestException:
+            att["download_url"] = None
+            att["size_bytes"] = 0
+
+    if own_session:
+        session.close()
+
+    return attachments_meta
+
+
+# =============================================================================
+# 通用文件下载（兼容 PDF、图片、Office 文档等）
+# =============================================================================
+
+def download_attachment(
+    download_url: str,
+    save_dir: str,
+    filename: str,
+    session: Optional[requests.Session] = None,
+) -> Optional[str]:
+    """
+    流式下载附件文件到本地（与 download_pdf 逻辑相同，命名更通用）。
+
+    若文件已存在则跳过下载（幂等）。
+    若未传入 session，则自动创建并访问列表页获取 OASESSIONID Cookie。
+
+    Args:
+        download_url: 文件下载链接（完整 URL）
+        save_dir: 保存目录
+        filename: 保存文件名（使用原始文件名，含扩展名）
+        session: 可选的 requests.Session（用于维持 Cookie 鉴权）。
+                 不传则自动创建并鉴权。
+
+    Returns:
+        保存后的完整路径，失败返回 None
+    """
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    filepath = Path(save_dir) / filename
+
+    if filepath.exists():
+        return str(filepath)
+
+    own_session = False
+    if session is None:
+        session = requests.Session()
+        session.headers.update(config.HEADERS)
+        own_session = True
+        try:
+            session.get(config.TYPE1_LIST_URL, timeout=config.REQUEST_TIMEOUT)
+        except requests.RequestException:
+            pass
+
+    for attempt in range(config.MAX_RETRIES + 1):
+        try:
+            resp = session.get(
+                download_url,
+                timeout=config.REQUEST_TIMEOUT,
+                stream=True,
+            )
+            resp.raise_for_status()
+
+            # HTML 登录页防御检查（用 iter_content 不用 raw.read）
+            chunk_iter = resp.iter_content(chunk_size=8192)
+            try:
+                first_chunk = next(chunk_iter)
+            except StopIteration:
+                if own_session:
+                    session.close()
+                return None
+
+            if (
+                first_chunk
+                and (first_chunk[:6] == b"\r\n<scr"
+                     or first_chunk[:7] == b"<script"
+                     or first_chunk[:6] == b"<html>"
+                     or first_chunk[:6] == b"<HTML>")
+            ):
+                if own_session:
+                    session.close()
+                return None
+
+            with open(filepath, "wb") as f:
+                f.write(first_chunk)
+                for chunk in chunk_iter:
+                    if chunk:
+                        f.write(chunk)
+            return str(filepath)
+
+        except requests.RequestException:
+            if attempt < config.MAX_RETRIES:
+                time.sleep(config.RETRY_BACKOFF * (2 ** attempt))
+            else:
+                if own_session:
+                    session.close()
+                return None
+
+    if own_session:
+        session.close()
+    return None
 
 
 # =============================================================================

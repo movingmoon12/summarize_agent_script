@@ -106,10 +106,11 @@ TYPE1_DETAIL_URL_TEMPLATE = (
     "/defaultroot/gov/info_view_my.jsp?whir_new_verifyCode=1&editId={edit_id}"
 )
 
-# 详情页正文内容的 XPath。
-# 经 2026-05-20 验证：正文在 <td id="content" class="_c"> 中，由 <p> 标签包裹。
-# 使用 //td[@id='content'] 精准定位正文容器，从内部所有文本节点提取。
-TYPE1_DETAIL_CONTENT_XPATH = "//td[@id='content']//text()"
+# 详情页正文容器的 XPath（定位到 HTML 元素，由 parser.py 调用 text_content() 提取文本）。
+# 经 2026-05-20 验证：正文在 <td id="content" class="_c"> 中。
+# 注意：此处只选元素，不带 //text()——text_content() 方法会递归拼接所有后代文本，
+# 避免 <span> 等内联标签切断文本流导致数字丢失。
+TYPE1_DETAIL_CONTENT_XPATH = "//td[@id='content']"
 
 # =============================================================================
 # 四、XPath 规则 — 学校发文 (type=2)
