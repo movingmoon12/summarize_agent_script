@@ -19,6 +19,7 @@
 ===============================================================================
 """
 
+import logging
 import re
 import time
 import requests
@@ -28,6 +29,11 @@ from pathlib import Path
 from typing import Optional
 
 import config
+
+# ---------------------------------------------------------------------------
+# 双轨制日志：对内详细记录（含堆栈），对外由 print() 输出中文友好提示
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("summarize_agent.scraper")
 
 # =============================================================================
 # 工具函数
@@ -100,8 +106,15 @@ def fetch_page(url: str) -> html.HtmlElement:
             if attempt < config.MAX_RETRIES:
                 backoff = config.RETRY_BACKOFF * (2 ** attempt)
                 time.sleep(backoff)
+        except Exception:
+            # lxml 解析异常等非 HTTP 错误：不可恢复，不重试直接记录并抛出
+            logger.exception("页面解析失败（非 HTTP 错误）: %s", full_url)
+            raise
 
     # 所有重试均失败
+    logger.error(
+        "请求失败（%d 次重试已用尽）: %s", config.MAX_RETRIES, full_url,
+    )
     raise RuntimeError(
         f"请求失败（{config.MAX_RETRIES} 次重试已用尽）: {full_url}"
     )
@@ -261,7 +274,20 @@ def _fetch_list(
 
     while page_url:
         page_num += 1
-        tree = fetch_page(page_url)
+
+        # —— 单页抓取（P0 修复：失败不丢弃已抓取数据） ——
+        try:
+            tree = fetch_page(page_url)
+        except Exception:
+            # 对内：记录完整堆栈供 Debug
+            logger.exception(
+                "[%s] 第 %d 页请求失败，已保留前 %d 条记录。URL: %s",
+                label, page_num, len(results), page_url,
+            )
+            # 对外：中文友好提示
+            print(f"  [网络暂时开小差] {label}第 {page_num} 页请求失败，已保留前 {len(results)} 条记录，跳过后续翻页")
+            break
+
         rows = tree.xpath(row_xpath)
 
         if not rows:
@@ -446,7 +472,10 @@ def fetch_and_parse_detail(detail_url: str) -> dict:
     try:
         tree = fetch_page(detail_url)
         return parse_type1_detail(tree)
-    except RuntimeError:
+    except Exception:
+        # 对内：记录完整堆栈（含 lxml 解析异常等非 RuntimeError 的错误）
+        logger.exception("详情页解析失败: %s", detail_url)
+        # 对外：返回空结构，由上层逐条 try-catch 继续处理下一条
         return {"text": "", "images": [], "tables": [], "attachments_meta": []}
 
 
@@ -519,37 +548,51 @@ def resolve_attachment_urls(
             att["size_bytes"] = 0
             continue
 
-        try:
-            resp = session.get(
-                f"{config.BASE_URL}/defaultroot/public/upload/uploadify/getFileInfo.jsp",
-                params={"saveFileName": save_name, "date": str(int(time.time()))},
-                timeout=config.REQUEST_TIMEOUT,
-            )
-            resp.encoding = "utf-8"
-
-            # 响应体是 JavaScript 风格 JSON（单引号），用正则提取 dlcode
-            dlcode_match = re.search(r"'dlcode'\s*:\s*'([^']+)'", resp.text)
-            size_match = re.search(r"'accLongSize'\s*:\s*(\d+)", resp.text)
-
-            if dlcode_match:
-                dlcode = dlcode_match.group(1)
-                # name 参数是必须的（经实测验证），用 URL 编码处理中文文件名
-                name_param = quote(original_name, safe='') if original_name else save_name
-                att["download_url"] = (
-                    f"{config.BASE_URL}/defaultroot/public/download/download.jsp"
-                    f"?verifyCode={dlcode}"
-                    f"&FileName={save_name}"
-                    f"&path=customform"
-                    f"&name={name_param}"
+        # P1 修复：getFileInfo.jsp 加重试（之前一次失败就永久丢失附件链接）
+        dlcode = None
+        file_size = 0
+        for attempt in range(config.MAX_RETRIES + 1):
+            try:
+                resp = session.get(
+                    f"{config.BASE_URL}/defaultroot/public/upload/uploadify/getFileInfo.jsp",
+                    params={"saveFileName": save_name, "date": str(int(time.time()))},
+                    timeout=config.REQUEST_TIMEOUT,
                 )
-            else:
-                att["download_url"] = None
+                resp.encoding = "utf-8"
 
-            att["size_bytes"] = int(size_match.group(1)) if size_match else 0
+                # 响应体是 JavaScript 风格 JSON（单引号），用正则提取 dlcode
+                dlcode_match = re.search(r"'dlcode'\s*:\s*'([^']+)'", resp.text)
+                size_match = re.search(r"'accLongSize'\s*:\s*(\d+)", resp.text)
 
-        except requests.RequestException:
+                if dlcode_match:
+                    dlcode = dlcode_match.group(1)
+                file_size = int(size_match.group(1)) if size_match else 0
+                break  # 成功，跳出重试循环
+
+            except requests.RequestException:
+                if attempt < config.MAX_RETRIES:
+                    backoff = config.RETRY_BACKOFF * (2 ** attempt)
+                    time.sleep(backoff)
+                else:
+                    logger.exception(
+                        "附件链接解析失败（%d 次重试已用尽）: saveFileName=%s",
+                        config.MAX_RETRIES, save_name,
+                    )
+
+        if dlcode:
+            # name 参数是必须的（经实测验证），用 URL 编码处理中文文件名
+            name_param = quote(original_name, safe='') if original_name else save_name
+            att["download_url"] = (
+                f"{config.BASE_URL}/defaultroot/public/download/download.jsp"
+                f"?verifyCode={dlcode}"
+                f"&FileName={save_name}"
+                f"&path=customform"
+                f"&name={name_param}"
+            )
+        else:
             att["download_url"] = None
-            att["size_bytes"] = 0
+
+        att["size_bytes"] = file_size
 
     if own_session:
         session.close()

@@ -22,7 +22,9 @@
 ===============================================================================
 """
 
+import logging
 import os
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -35,6 +37,39 @@ from scraper import (
 )
 from parser import process_type2_pdfs
 from llm_handler import summarize_batch
+
+# ---------------------------------------------------------------------------
+# 双轨制日志配置（入口处一次性设定，所有子模块共享）
+#   - 文件：DEBUG 级别，含完整堆栈 → output/debug/{date}_run.log
+#   - 终端：WARNING 级别，仅关键告警 → stderr
+# ---------------------------------------------------------------------------
+_LOG_FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_LOG_DATE_FMT = "%H:%M:%S"
+
+
+def _setup_logging() -> Path:
+    """配置双轨制日志，返回日志文件路径。"""
+    root = logging.getLogger("summarize_agent")
+    root.setLevel(logging.DEBUG)
+    root.handlers.clear()
+
+    # 文件 handler：所有 DEBUG+ 写盘，供事后排查
+    log_dir = Path(config.PROJECT_ROOT) / "output" / "debug"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today().strftime("%Y%m%d")
+    log_path = log_dir / f"{today}_run.log"
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(_LOG_FMT, _LOG_DATE_FMT))
+    root.addHandler(file_handler)
+
+    # 终端 handler：仅 WARNING+，不刷屏
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(logging.Formatter(_LOG_FMT, _LOG_DATE_FMT))
+    root.addHandler(console_handler)
+
+    return log_path
 
 
 # =============================================================================
@@ -69,22 +104,25 @@ def _phase_fetch_lists(target_date: date) -> tuple[list[dict], list[dict]]:
     Returns:
         (type1_notices, type2_notices) — 失败侧返回空列表
     """
+    _log = logging.getLogger("summarize_agent.main")
     t1, t2 = [], []
 
     # ——— type1：校内通知 ———
     try:
         t1 = fetch_type1_list(target_date)
         print(f"  [校内通知] {len(t1)} 条")
-    except Exception as e:
-        print(f"  [错误] 校内通知列表抓取失败: {e}")
+    except Exception:
+        _log.exception("Phase 1: type1 列表抓取整体失败")
+        print(f"  [错误] 校内通知列表抓取失败，已跳过")
         t1 = []
 
     # ——— type2：学校发文 ———
     try:
         t2 = fetch_type2_list(target_date)
         print(f"  [学校发文] {len(t2)} 条")
-    except Exception as e:
-        print(f"  [错误] 学校发文列表抓取失败: {e}")
+    except Exception:
+        _log.exception("Phase 1: type2 列表抓取整体失败")
+        print(f"  [错误] 学校发文列表抓取失败，已跳过")
         t2 = []
 
     return t1, t2
@@ -155,8 +193,9 @@ def _phase_download_type2_pdfs(
 
     try:
         return process_type2_pdfs(notices, target_date_str)
-    except Exception as e:
-        print(f"  [错误] PDF 批量处理整体失败: {e}")
+    except Exception:
+        logging.getLogger("summarize_agent.main").exception("Phase 3: PDF 批量处理整体失败")
+        print(f"  [错误] PDF 批量处理失败，已跳过")
         for n in notices:
             if "raw_text" not in n:
                 n["raw_text"] = ""
@@ -235,12 +274,13 @@ def _phase_summarize(notices: list[dict]) -> list[dict]:
             summarize_batch(with_text, max_workers=5)
             for n in with_text:
                 if "summary" not in n:
-                    n["summary"] = "摘要生成失败：LLM 未返回结果"
-        except Exception as e:
-            print(f"  [错误] LLM 批量摘要整体失败: {e}")
+                    n["summary"] = "摘要生成失败：服务暂时无响应，请稍后重试"
+        except Exception:
+            logging.getLogger("summarize_agent.main").exception("Phase 5: LLM 批量摘要整体失败")
+            print(f"  [错误] 大模型摘要生成失败，已跳过")
             for n in with_text:
                 if "summary" not in n:
-                    n["summary"] = f"摘要生成失败：{e}"
+                    n["summary"] = "摘要生成失败：服务不可用，请稍后重试"
 
     return notices
 
@@ -435,10 +475,15 @@ def main(target_date: date | None = None):
 
     date_str = target_date.strftime("%Y-%m-%d")
 
+    # 初始化双轨制日志
+    log_path = _setup_logging()
+    logger = logging.getLogger("summarize_agent.main")
+
     print("=" * 60)
     print(f"  学校通知自动爬取与智能总结智能体")
     print(f"  目标日期: {date_str}（{_weekday_cn(target_date)}）")
     print(f"  LLM 模型: {config.LLM_MODEL}")
+    print(f"  日志文件: {log_path}")
     print("=" * 60)
 
     # ===== Phase 1: 抓取通知列表 =====
@@ -491,18 +536,20 @@ def main(target_date: date | None = None):
         print(f"  {report_path}")
         print(f"{'=' * 60}")
 
-        # ===== Debug Dump: 全链路中间产出落盘 =====
-        debug_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        debug_dir = Path(config.DEBUG_OUTPUT_DIR) / f"debug_{debug_ts}"
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            _dump_debug_info(debug_dir, type1_notices, type2_notices, target_date)
-        except Exception as e:
-            print(f"  [警告] Debug 数据写入失败（不影响报告）: {e}")
-    except Exception as e:
-        print(f"\n[严重错误] 报告生成失败: {e}")
-        # 兜底：写一份最小化报告
-        _write_fallback_report(target_date, str(e))
+        # # ===== Debug Dump: 全链路中间产出落盘 =====
+        # debug_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # debug_dir = Path(config.DEBUG_OUTPUT_DIR) / f"debug_{debug_ts}"
+        # debug_dir.mkdir(parents=True, exist_ok=True)
+        # try:
+        #     from debug_dump import dump_debug_info
+        #     dump_debug_info(debug_dir, type1_notices, type2_notices, target_date)
+        # except Exception as e:
+        #     print(f"  [警告] Debug 数据写入失败（不影响报告）: {e}")
+    except Exception:
+        logging.getLogger("summarize_agent.main").exception("Phase 6: 报告生成严重错误")
+        print(f"\n[严重错误] 报告生成失败，已生成兜底报告")
+        # 兜底：写一份最小化报告（不在报告中暴露异常细节）
+        _write_fallback_report(target_date, "报告生成过程中发生未预期的错误，请查看运行日志排查")
 
 
 def _write_fallback_report(target_date: date, error_msg: str) -> None:
@@ -536,169 +583,8 @@ def _write_fallback_report(target_date: date, error_msg: str) -> None:
 
 
 # =============================================================================
-# 全链路 Debug Dump — 所有中间产出落盘到时间戳目录
+# 命令行入口
 # =============================================================================
 
-def _dump_debug_info(
-    debug_dir: Path,
-    type1_notices: list[dict],
-    type2_notices: list[dict],
-    target_date: date,
-) -> None:
-    """
-    将 scraper / parser / LLM 三个模块的全部中间产出保存到 debug_dir。
-
-    目录结构：
-      debug_dir/
-      ├── 00_system_prompt.txt          # LLM 使用的 System Prompt
-      ├── 01_scraper/
-      │   ├── type1_list.html           # 校内通知列表页原始 HTML
-      │   ├── type2_list.html           # 学校发文列表页原始 HTML
-      │   ├── type1_notices.json        # 解析后的通知列表（结构化 JSON）
-      │   └── type2_notices.json
-      ├── 02_parser/
-      │   ├── type1/
-      │   │   ├── {editId}/
-      │   │   │   ├── detail.html        # 详情页原始 HTML
-      │   │   │   ├── extracted_text.txt # 位置感知纯文本（送 LLM 的输入源）
-      │   │   │   ├── images.json        # 检测到的图片元数据
-      │   │   │   ├── tables.md          # 提取的 Markdown 表格
-      │   │   │   └── attachments.json   # 附件元数据 + 下载链接
-      │   │   └── ...
-      │   └── type2/
-      │       └── {filename}/
-      │           └── extracted_text.txt # PDF 提取的纯文本
-      ├── 03_llm/
-      │   ├── {idx}_{editId}_input.txt   # 送入 LLM 的文本（已清洗 URL）
-      │   ├── {idx}_{editId}_output.md   # LLM 返回的摘要
-      │   └── ...
-      └── daily_report.md                # 最终产出的日报（副本）
-    """
-    import json
-    import requests
-    from lxml import etree
-    from llm_handler import _sanitize_for_llm, _build_user_message, SYSTEM_PROMPT
-
-    print(f"\n写入全链路 Debug 数据到: {debug_dir}")
-
-    # ——— 00: System Prompt ———
-    (debug_dir / "00_system_prompt.txt").write_text(SYSTEM_PROMPT, encoding="utf-8")
-
-    # ——— 01: Scraper 层 ———
-    scraper_dir = debug_dir / "01_scraper"
-    scraper_dir.mkdir(parents=True, exist_ok=True)
-
-    # 原始列表页 HTML（重新请求，仅用于 debug）
-    for label, url in [
-        ("type1_list.html", config.TYPE1_LIST_URL),
-        ("type2_list.html", config.TYPE2_LIST_URL),
-    ]:
-        try:
-            resp = requests.get(url, headers=config.HEADERS, timeout=config.REQUEST_TIMEOUT)
-            resp.encoding = config.PAGE_ENCODING
-            (scraper_dir / label).write_text(resp.text, encoding="utf-8")
-        except Exception as e:
-            (scraper_dir / label).write_text(f"获取失败: {e}", encoding="utf-8")
-
-    # 解析后的通知列表 JSON
-    _safe_json_dump(scraper_dir / "type1_notices.json", type1_notices)
-    _safe_json_dump(scraper_dir / "type2_notices.json", type2_notices)
-
-    # ——— 02: Parser 层 ———
-    parser_dir = debug_dir / "02_parser"
-    parser_dir.mkdir(parents=True, exist_ok=True)
-
-    # type1：每条通知的详情页 HTML + 提取产物
-    type1_parser_dir = parser_dir / "type1"
-    type1_parser_dir.mkdir(parents=True, exist_ok=True)
-    for notice in type1_notices:
-        edit_id = notice.get("edit_id", "unknown")
-        notice_dir = type1_parser_dir / str(edit_id)
-        notice_dir.mkdir(parents=True, exist_ok=True)
-
-        # 详情页原始 HTML
-        try:
-            from scraper import fetch_page
-            tree = fetch_page(notice.get("detail_url", ""))
-            html_str = etree.tostring(tree, encoding="unicode", pretty_print=True)
-            (notice_dir / "detail.html").write_text(html_str, encoding="utf-8")
-        except Exception as e:
-            (notice_dir / "detail.html").write_text(f"获取失败: {e}", encoding="utf-8")
-
-        # 提取的纯文本
-        (notice_dir / "extracted_text.txt").write_text(
-            notice.get("raw_text", ""), encoding="utf-8"
-        )
-
-        # 图片/表格/附件元数据
-        _safe_json_dump(notice_dir / "images.json", notice.get("images", []))
-        tables_md = "\n\n".join(notice.get("tables", []))
-        if tables_md:
-            (notice_dir / "tables.md").write_text(tables_md, encoding="utf-8")
-        _safe_json_dump(notice_dir / "attachments.json", notice.get("attachments_meta", []))
-
-    # type2：PDF 提取的文本
-    type2_parser_dir = parser_dir / "type2"
-    type2_parser_dir.mkdir(parents=True, exist_ok=True)
-    for notice in type2_notices:
-        number = notice.get("number", "").replace("/", "_").replace("\\", "_")
-        title_short = notice.get("title", "unknown")[:20]
-        safe_name = f"{number}_{title_short}" if number else title_short
-        notice_dir = type2_parser_dir / safe_name
-        notice_dir.mkdir(parents=True, exist_ok=True)
-        (notice_dir / "extracted_text.txt").write_text(
-            notice.get("raw_text", ""), encoding="utf-8"
-        )
-
-    # ——— 03: LLM 层 ———
-    llm_dir = debug_dir / "03_llm"
-    llm_dir.mkdir(parents=True, exist_ok=True)
-
-    all_notices = type1_notices + type2_notices
-    idx = 0
-    for notice in all_notices:
-        raw_text = notice.get("raw_text", "").strip()
-        if not raw_text:
-            continue
-        idx += 1
-        edit_id = notice.get("edit_id", notice.get("number", str(idx)))
-
-        # 入 LLM 的清洗后文本（与实际调用完全一致）
-        sanitized = _sanitize_for_llm(raw_text)
-        user_message = _build_user_message(notice.get("title", ""), sanitized)
-        (llm_dir / f"{idx:02d}_{edit_id}_input.txt").write_text(
-            user_message, encoding="utf-8"
-        )
-
-        # LLM 返回的摘要
-        (llm_dir / f"{idx:02d}_{edit_id}_output.md").write_text(
-            notice.get("summary", ""), encoding="utf-8"
-        )
-
-    print(f"  已保存 {idx} 条 LLM 输入/输出对")
-
-    # ——— 最终报告副本 ———
-    report_src = (
-        Path(config.REPORT_OUTPUT_DIR)
-        / config.REPORT_FILENAME_TEMPLATE.format(date=target_date.strftime("%Y-%m-%d"))
-    )
-    if report_src.exists():
-        import shutil
-        shutil.copy(report_src, debug_dir / "daily_report.md")
-
-    print(f"  Debug 数据写入完成: {debug_dir}")
-
-
-def _safe_json_dump(path: Path, data) -> None:
-    """安全写入 JSON（处理 datetime 等不可序列化对象）。"""
-    import json
-
-    def _default(obj):
-        if hasattr(obj, "isoformat"):
-            return obj.isoformat()
-        return str(obj)
-
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2, default=_default),
-        encoding="utf-8",
-    )
+if __name__ == "__main__":
+    main()

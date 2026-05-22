@@ -36,6 +36,7 @@ TYPE2_LIST_URL = f"{BASE_URL}/defaultroot/SInformAction.do?action=init&type=2"
 # 目标日期：只采集这一天的通知。默认为脚本运行当天。
 # 手动指定示例：TARGET_DATE = date(2026, 5, 15)
 TARGET_DATE = date.today()
+# TARGET_DATE = date(2026, 5, 20)
 
 # 页面中日期的显示格式（用于 datetime.strptime 解析）。
 # 常见格式："2026-05-20" → "%Y-%m-%d"；"2026/05/20" → "%Y/%m/%d"

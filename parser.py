@@ -14,6 +14,7 @@
 ===============================================================================
 """
 import gc
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,11 @@ from typing import Optional
 # 两者均为轻量库，不作为项目依赖时 import 不会报错
 
 import config
+
+# ---------------------------------------------------------------------------
+# 双轨制日志：对内详细记录（含堆栈），对外由 print() 输出中文友好提示
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("summarize_agent.parser")
 
 
 # =============================================================================
@@ -96,8 +102,9 @@ def extract_pdf_text(filepath: str) -> str:
         text = _extract_with_pdfplumber(filepath)
         if text.strip():
             return text
-    except Exception as e:
-        print(f"  [回退] pdfplumber 提取失败: {e}")
+    except Exception:
+        logger.exception("pdfplumber 提取失败: %s", filepath)
+        print(f"  [回退] pdfplumber 无法解析此 PDF，尝试 pypdf...")
 
     # ---- 回退：pypdf ----
     if config.PDF_FALLBACK_ENABLED:
@@ -105,8 +112,9 @@ def extract_pdf_text(filepath: str) -> str:
             text = _extract_with_pypdf(filepath)
             if text.strip():
                 return text
-        except Exception as e:
-            print(f"  [错误] pypdf 回退也失败: {e}")
+        except Exception:
+            logger.exception("pypdf 回退也失败: %s", filepath)
+            print(f"  [无法解析] 此 PDF 文件暂不支持自动解析，请点击原文链接查看")
 
     return text
 
@@ -145,15 +153,19 @@ def process_type2_pdfs(
     # 创建 Session 并先访问列表页，获取 OASESSIONID Cookie（PDF 下载鉴权依赖）
     session = requests.Session()
     session.headers.update(config.HEADERS)
+
+    cookie_ok = True
     try:
         resp = session.get(config.TYPE2_LIST_URL, timeout=config.REQUEST_TIMEOUT)
         resp.encoding = config.PAGE_ENCODING
-    except requests.RequestException:
-        # 即使取 Cookie 失败，仍然尝试下载（某些 PDF 可能无鉴权）
-        pass
+    except requests.RequestException as e:
+        cookie_ok = False
+        logger.warning("登录会话（Cookie）获取失败: %s", e)
+        print("  [警告] 无法获取登录会话，PDF 下载可能因鉴权失败。如全部下载失败，请检查网络连接。")
 
     pdf_dir = str(Path(config.PDF_OUTPUT_DIR) / target_date_str)
 
+    download_fail_count = 0
     for i, notice in enumerate(type2_notices):
         title = notice.get("title", "unknown")
         pdf_url = notice.get("pdf_url")
@@ -171,8 +183,9 @@ def process_type2_pdfs(
         # 下载 PDF（传入 Session 携带鉴权 Cookie）
         saved_path = download_pdf(pdf_url, pdf_dir, filename, session=session)
         if not saved_path:
-            print(f"  [错误] PDF 下载失败，跳过: {title[:40]}")
+            print(f"  [下载失败] {title[:40]}，请点击原文链接查看")
             notice["raw_text"] = ""
+            download_fail_count += 1
             continue
 
         # 提取文本 → 立即释放 PDF 对象
@@ -182,7 +195,13 @@ def process_type2_pdfs(
         if raw_text:
             print(f"  [提取] ({i+1}/{len(type2_notices)}) {title[:40]} → {len(raw_text)} 字符")
         else:
-            print(f"  [警告] ({i+1}/{len(type2_notices)}) 文本为空: {title[:40]}")
+            print(f"  [空白] ({i+1}/{len(type2_notices)}) {title[:40]}，PDF 内容为空或无法解析")
+
+    # 诊断：如果全部下载失败且 Cookie 有问题，给出根因提示
+    total = len(type2_notices)
+    if total > 0 and download_fail_count == total and not cookie_ok:
+        print(f"  [诊断] 全部 {total} 条 PDF 下载失败，根因可能是登录会话（Cookie）获取失败。")
+        print(f"         请确认目标服务器可访问: {config.TYPE2_LIST_URL}")
 
     # Session 用完关闭
     session.close()

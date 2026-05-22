@@ -21,12 +21,20 @@
 ===============================================================================
 """
 
+import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI, APIStatusError, AuthenticationError, RateLimitError, APIConnectionError
+
+import config
+
+# ---------------------------------------------------------------------------
+# 双轨制日志：对内详细记录（含堆栈），对外由 print() 输出中文友好提示
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("summarize_agent.llm")
 
 import config
 
@@ -175,22 +183,59 @@ def summarize_single(
                 max_tokens=config.LLM_MAX_TOKENS,
                 temperature=config.LLM_TEMPERATURE,
             )
-            summary = response.choices[0].message.content
+            choice = response.choices[0]
+            summary = choice.message.content
+            finish_reason = choice.finish_reason
+
             if summary:
                 return summary.strip()
 
-            # 空响应也重试
+            # 空响应：记录 finish_reason 再决定是否重试
+            logger.warning(
+                "LLM 返回空响应 finish_reason=%s (attempt %d/%d)",
+                finish_reason, attempt + 1, max_retries + 1,
+            )
+            if finish_reason == "content_filter":
+                return "摘要生成失败：内容涉及安全限制，无法自动生成摘要，请点击原文链接查看"
+
             if attempt < max_retries:
                 time.sleep(1.0)
             continue
 
-        except Exception as e:
-            if attempt < max_retries:
-                time.sleep(2.0 * (attempt + 1))  # 指数退避
-            else:
-                return f"摘要生成失败：{e}"
+        except AuthenticationError:
+            # API Key 问题 → 不可重试，直接返回
+            logger.exception("LLM 认证失败，请检查 API Key")
+            return "摘要生成失败：API 密钥无效，请检查 .env 中的密钥配置"
 
-    return "摘要生成失败：LLM 返回空响应"
+        except RateLimitError:
+            if attempt < max_retries:
+                time.sleep(3.0 * (attempt + 1))  # 限频退避更长
+                continue
+            logger.exception("LLM 调用频率超限")
+            return "摘要生成失败：调用过于频繁，请稍后重试"
+
+        except APIConnectionError:
+            if attempt < max_retries:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            logger.exception("LLM 网络连接失败")
+            return "摘要生成失败：网络连接失败，请检查 API 地址和网络状态"
+
+        except APIStatusError as e:
+            if attempt < max_retries:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            logger.exception("LLM 服务端错误 status=%s", e.status_code)
+            return "摘要生成失败：服务暂时不可用，请稍后重试"
+
+        except Exception:
+            if attempt < max_retries:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            logger.exception("LLM 调用未知异常")
+            return "摘要生成失败：遇到未知错误，请稍后重试"
+
+    return "摘要生成失败：服务暂时无响应，请稍后重试"
 
 
 # =============================================================================
@@ -231,10 +276,17 @@ def summarize_batch(
         return notices
 
     # 创建共享的 OpenAI 客户端（复用 HTTP 连接池）
-    client = OpenAI(
-        api_key=config.LLM_API_KEY,
-        base_url=config.LLM_BASE_URL,
-    )
+    # P2 修复：客户端创建失败（如 API Key 为空/格式错误）不再崩溃
+    try:
+        client = OpenAI(
+            api_key=config.LLM_API_KEY,
+            base_url=config.LLM_BASE_URL,
+        )
+    except Exception:
+        logger.exception("OpenAI 客户端创建失败，请检查 API Key / Base URL 配置")
+        for notice in notices:
+            notice["summary"] = "摘要生成失败：API 配置有误，请检查 .env 文件中的密钥和地址配置"
+        return notices
 
     # 构造任务列表：每条通知一个 future
     # 使用 dict 映射 future → notice_index，保证结果写回正确位置
@@ -251,8 +303,9 @@ def summarize_batch(
             idx = futures_map[future]
             try:
                 notices[idx]["summary"] = future.result()
-            except Exception as e:
-                notices[idx]["summary"] = f"并行摘要异常：{e}"
+            except Exception:
+                logger.exception("并行摘要任务异常，notice_index=%d", idx)
+                notices[idx]["summary"] = "摘要生成失败：处理过程异常，请稍后重试"
 
     return notices
 
