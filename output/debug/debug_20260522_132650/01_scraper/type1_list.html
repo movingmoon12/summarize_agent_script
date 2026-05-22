@@ -1,0 +1,585 @@
+
+
+
+
+
+
+
+
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<title>校内通知</title><meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<META HTTP-EQUIV="pragma" CONTENT="no-cache"> 
+<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache, must-revalidate"> 
+<link href="/defaultroot/skin/2012skin_blue/style_s.css" rel="stylesheet" type="text/css" />
+<script language="javascript" src="/defaultroot/js/js.js"></script>
+<script language=javascript src="/defaultroot/custom_form/datetime/datetime_check.js"></script>
+<script language=javascript src="/defaultroot/custom_form/datetime/datetime_select.js"></script>
+
+<style>
+
+</style>
+
+<script language="JavaScript" type="text/javascript"> 
+<!-- 
+		var patrn=/^[ ]*[0]*[1-9][0-9]*[ ]*$/;
+ 
+		var gdCtrl = new Object();
+		var goSelectTag = new Array();
+		var gcGray = "#808080";
+		var gcToggle = "#ffff00";
+		var gcBG = "#cccccc";
+ 
+		var gdCurDate = new Date();
+		var giYear = gdCurDate.getFullYear();
+		var giMonth = gdCurDate.getMonth()+1;
+		var giDay = gdCurDate.getDate();
+		var gMonths = new Array("一月","二月","三月","四月","五月","六月","七月","八月","九月","十月","十一月","十二月");
+		//initCalendar();
+
+</script>
+ 
+<script language="JavaScript" type="text/javascript"> 
+
+</script>
+</head>
+<body text="#000000" bgcolor="#FFFFFF" leftmargin="0" topmargin="0" marginwidth="0" marginheight="0">
+ 
+<form method="post" action="" name="_forportlet">
+<table border="0" cellspacing="0" cellpadding="0" width="920" align="center">
+<tr><td>
+<TABLE style="BACKGROUND-COLOR:#f2edeb" height=105 cellSpacing=0 cellPadding=0 width=100% border=0>
+        <TBODY>
+        <TR>
+          <TD align=middle width=263 rowSpan=2>
+             <B><FONT face=华文行楷 color=#2080a0 size=7>校内通知</FONT> </B>
+          </TD>
+
+          <TD align=middle colSpan=4 height=33>			
+			<TABLE style="TEXT-ALIGN: center" cellSpacing=0 cellPadding=0 border=0>
+              <TBODY>
+              <TR>
+                <TD align=middle width=120 nowrap="nowrap"><A href="/defaultroot/SInformAction.do?action=init&type=1" target="_self">
+                 <B><FONT face=楷体_GB2312 color=#2080a0 size=4>校内通知</FONT></B> </A> 
+                </TD>
+                <TD align=middle width=120 nowrap="nowrap"><A href="/defaultroot/SInformAction.do?action=init&type=2" target="_self">
+                   <B><FONT face=楷体_GB2312 color=#2080a0 size=4>学校发文</FONT></B></A> 
+                </TD>
+               <TD align=middle width=120 nowrap="nowrap" style="display:none;"><A href="/defaultroot/SInformAction.do?action=init&type=3" target="_self">
+                   <B><font face=楷体_GB2312 color=#2080a0 size="4">学术报告</font></B></A> 
+                </TD>
+               <TD align=middle width=130 nowrap="nowrap"><A href="http://202.195.128.68/fawen.htm" target="_blank">
+                   <B><FONT face=楷体_GB2312 color=red size=4>历史发文</FONT></B></A> 
+                </TD>
+                <TD width=30></TD></TR></TBODY>
+			</TABLE>
+		 </TD>
+          <TD align=left colSpan=3 height=33 nowrap="nowrap"><FONT color=green size=2>
+            <SCRIPT language=JavaScript>                      
+       		d = new Date();                               
+       		switch (d.getDay()) {	                      
+       		  case 0:   strweek="日";                     
+       		  	    break;                            
+       		  case 1:   strweek="一";                     
+       		  	    break;	                      
+       		  case 2:   strweek="二";                     
+       		  	    break;                            
+       		  case 3:   strweek="三";                     
+       		  	    break;                            
+           	  case 4:   strweek="四";                     
+           	  	    break;                            
+           	  case 5:   strweek="五";                     
+       	            break;                                    
+              case 6:   strweek="六";                         
+               	    break;                                    
+                       }                                      
+                document.write("2026年"+(d.getMonth()+1)+"月"+d.getDate()+"日"+" 星期"+ strweek); 
+            </SCRIPT>                                         
+            </FONT></TD>                                      
+     </TR>
+
+
+        <TR>
+          <TD align=middle colSpan=7 height=70>
+            <TABLE style="BORDER-RIGHT: lightgrey 2px solid; BORDER-TOP: lightgrey 2px solid; FONT-SIZE: 12px; 
+             BORDER-LEFT: lightgrey 2px solid; WIDTH: 650px; COLOR: green; BORDER-BOTTOM: lightgrey 1px solid" cellSpacing=0 cellPadding=0>
+              <TBODY>
+              <TR>
+                <TD style="WIDTH: 80px" nowrap="nowrap">开始日期：</TD>
+                <TD><font size="2"> </font><font size="2">
+<input name="s_date" size=13 onclick="setDay(this);" value="" readonly class="input"></font><font size="2"> </font></TD>
+                <TD style="WIDTH: 70px" nowrap="nowrap">结束日期： </TD>
+                <TD> 
+<input  size=13 name="e_date" readonly onclick="setDay(this);" value=""> </TD>
+                <TD style="WIDTH: 70px" nowrap="nowrap">发布单位：</TD>
+                <TD>
+<input name="f_org" value="" size=20 class="input"> </TD>
+                <TD style="WIDTH: 80px">&nbsp;
+                </TD></TR>
+				 <TR>
+                 <TD style="WIDTH: 80px" nowrap="nowrap">标题：</TD>
+                 <TD colSpan=5> 
+<input name="tt" value="" size=77 class="input"> </TD>
+                 <TD style="WIDTH: 80px"></TD>
+               </TR>
+               <TR>
+                 <TD style="WIDTH: 80px" nowrap="nowrap">全文检索：</TD>
+                 <TD colSpan=5> 
+<input name="all_text" value="" size=77 class="input" title="如有多个搜索条件，请以空格隔开。"> </TD>
+                 <TD style="WIDTH: 80px"><INPUT class=ButtonCss style="WIDTH:60px; POSITION: relative" type=button value=查询 onclick="searchT('1');"></TD>
+               </TR>
+      </TABLE></td></tr>
+	  </table>
+</td></tr>
+<tr valign="top"><td class="sepline" width="100%"><img src="/icons/ecblank.gif" border="0" height="1" width="1"></td></tr>
+<tr valign="top"><td style="BACKGROUND:url('/defaultroot/gov/bc3.jpg') no-repeat right bottom;">
+   <TABLE style="COLOR: #333333; POSITION: relative; BORDER-COLLAPSE: collapse" cellSpacing=0 cellPadding=4 border=0 width="100%">
+      <TR style="height:30px;FONT-WEIGHT: normal; COLOR: green; BACKGROUND-COLOR: lightgrey">
+          
+		   <TH scope=col align="center" width="15%">日期</TH>
+           <TH scope=col align="center" width="70%">标题</TH>
+           <TH scope=col align="center" width="15%">发布单位</TH>
+		   
+      </TR>
+
+	 
+			
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-22</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40224445');document.cookie='TZGG40224445=40224445';" title="关于组织我校辅导员观摩第十一届江苏省高校辅导员素质能力提升骨干训练营苏州大学基地训练营复选的通知">关于组织我校辅导员观摩第十一届江苏省高校辅导员素质能力提升骨干训练营苏州大学基地训练营复选的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">党委学生工作部（学生工作处）</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-22</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40224393');document.cookie='TZGG40224393=40224393';" title="关于开展2026年上半年度国（境）外博士研究生科研合作访学阶段性考核工作的通知">关于开展2026年上半年度国（境）外博士研究生科研合作访学阶段性考核工作的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">国际合作交流处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-22</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40224153');document.cookie='TZGG40224153=40224153';" title="出国人员公示">出国人员公示</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">国际合作交流处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-22</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40223756');document.cookie='TZGG40223756=40223756';" title="苏州大学科研助理岗位招聘公告">苏州大学科研助理岗位招聘公告</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">人力资源处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40222165');document.cookie='TZGG40222165=40222165';" title="关于开展中国国际大学生创新大赛2026年校级培育项目集训营（四）的通知">关于开展中国国际大学生创新大赛2026年校级培育项目集训营（四）的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">创新创业学院</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40221574');document.cookie='TZGG40221574=40221574';" title="关于领取“让年华闪光Ⅳ”苏州大学合唱音乐会门票的通知">关于领取“让年华闪光Ⅳ”苏州大学合唱音乐会门票的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">艺术教育中心<br/>音乐学院</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40220908');document.cookie='TZGG40220908=40220908';" title="关于开展2026年大学生创新训练计划创业实践类项目立项评审工作的通知">关于开展2026年大学生创新训练计划创业实践类项目立项评审工作的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">创新创业学院</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40219646');document.cookie='TZGG40219646=40219646';" title="关于开展中国国际大学生创新大赛2026年校级培育项目集训营（三）的通知">关于开展中国国际大学生创新大赛2026年校级培育项目集训营（三）的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">创新创业学院</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40219442');document.cookie='TZGG40219442=40219442';" title="关于组织领导干部观看专题教育片的通知">关于组织领导干部观看专题教育片的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">党委办公室<br/>党委组织部</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40219245');document.cookie='TZGG40219245=40219245';" title="关于组织申报2026年度江苏高校哲学社会科学思想政治工作研究重大项目、专题项目的通知">关于组织申报2026年度江苏高校哲学社会科学思想政治工作研究重大项目、专题项目的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">党委宣传部     <br/>党委学生工作部（学生工作处）<br/>人文社会科学处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40219215');document.cookie='TZGG40219215=40219215';" title="关于组织申报2026年度江苏高校哲学社会科学研究重大项目、一般项目的通知">关于组织申报2026年度江苏高校哲学社会科学研究重大项目、一般项目的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">人文社会科学处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-21</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40217827');document.cookie='TZGG40217827=40217827';" title="关于举办苏州大学第二十三届研究生学术科技文化节开幕式的通知">关于举办苏州大学第二十三届研究生学术科技文化节开幕式的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">团委<br/>研究生会</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40216928');document.cookie='TZGG40216928=40216928';" title="苏州大学（江都高新区）新材料产业研究院关于遴选2026年度概念验证入库项目的通知（第二轮）">苏州大学（江都高新区）新材料产业研究院关于遴选2026年度概念验证入库项目的通知（第二轮）</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">苏州大学产业技术研究院<br/>苏州大学材料与化学化工学部<br/>苏州大学（江都高新区）新材料产业研究院<br/>江苏省概念验证中心（苏州大学）</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40216468');document.cookie='TZGG40216468=40216468';" title="关于举办团团赋能计划之服务基层项目面试指导讲座的通知">关于举办团团赋能计划之服务基层项目面试指导讲座的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">团委</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40216343');document.cookie='TZGG40216343=40216343';" title="关于做好2026-2027年度中加学者交换项目遴选工作通知">关于做好2026-2027年度中加学者交换项目遴选工作通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">人力资源处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40215989');document.cookie='TZGG40215989=40215989';" title="关于开展“党建引领 统战赋能‘教育科技人才’一体发展”基层党组织统战工作案例征集的通知">关于开展“党建引领 统战赋能‘教育科技人才’一体发展”基层党组织统战工作案例征集的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">党委统战部<br/>党委组织部</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40214948');document.cookie='TZGG40214948=40214948';" title="关于推荐教师参加“2026年江苏高校外国留学生教学观摩比赛”的通知">关于推荐教师参加“2026年江苏高校外国留学生教学观摩比赛”的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">国际合作交流处<br/>教务处<br/>教师教学发展中心</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40214854');document.cookie='TZGG40214854=40214854';" title="出国人员公示">出国人员公示</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">国际合作交流处</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40213087');document.cookie='TZGG40213087=40213087';" title="关于召开苏州大学学生工作会议的通知">关于召开苏州大学学生工作会议的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">党委学生工作部（学生工作处）</td>
+           </TR>
+		   
+     
+
+				
+
+
+	
+		   <TR style="FONT-WEIGHT: normal;">
+          <td  class="listTableLine222" align="center" nowrap>2026-05-20</td>
+          <td  class="listTableLine222"><a target="_blank" style="cursor:hand;" onclick="javascript:this.style.color='#666666';open_tz('40212642');document.cookie='TZGG40212642=40212642';" title="关于组织申报可持续发展国际合作科学计划2026年度项目指南（第一批补充）的通知">关于组织申报可持续发展国际合作科学计划2026年度项目指南（第一批补充）的通知</a></td>
+
+		  
+          <td  class="listTableLine222" align="center">科学技术研究院</td>
+           </TR>
+		   
+     
+
+		
+
+</table>
+
+
+
+
+<script>
+ function open_tz(id){
+   window.open('/defaultroot/gov/info_view_my.jsp?whir_new_verifyCode=1&editId='+id,'','');
+   //alert(document.cookie);
+ }
+
+ function searchT(){
+	 var title="";
+  var s_date=document.all.s_date.value;
+   var e_date=document.all.e_date.value;
+   var f_org=document.all.f_org.value;
+   var all_text=document.all.all_text.value;
+   var tt = document.all.tt.value;
+   var type="1";
+	if(type==1){
+	 title="校内通知";
+	}else if(type==2){title="学校发文";}else if(type==3){title="学术报告";}else if(type==4){title="历史通知发文";}else if(type==5){title="帮助";}
+
+   location.href="/defaultroot/SInformAction.do?action=init&type="+type+"&title="+title+"&tt="+tt+"&s_date="+s_date+"&e_date="+e_date+"&f_org="+f_org+"&all_text="+all_text;
+ }
+</script>
+<style>
+html,body{ height:100%; padding:0px;}
+.listTableLine222{
+    height:25px;
+
+}
+
+#MainMenuFrame{
+ background-image:url(images/logo_bg.gif);
+  background-position:top; background-repeat:repeat-x;
+}
+/*基本标签样式*/
+td,div,p,span,option,label,li{
+	font-size:12px;	
+	font-family:"宋体",Arial;
+}
+ul,li{ margin:0px; padding:0px;}
+
+form{
+  margin:0px; padding:0px;
+}
+img{ border:0px;}
+
+/*基本链接样式*/
+img{ border:0px;}
+a{
+	font-size:12px;
+	color:blue;
+	text-decoration:none;
+}
+
+a:hover{
+	color:#ff0000;
+	text-decoration:none;
+}
+
+.PopMenu{
+  border:1px solid #67A0D9;
+  background-color:#F3F7FC;
+
+}
+</style>
+<table width="100%" border="0" cellpadding="0" cellspacing="0" class="pagebar">
+	<tr style="height:30px;FONT-WEIGHT: normal; COLOR: green; BACKGROUND-COLOR: lightgrey">
+		<td>
+                       
+
+                
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                        
+                    
+                    
+                    
+                         <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=20"><nobr> 下页 </nobr></a>
+                    
+                    
+                        
+                         <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=39540"><nobr> 尾页&nbsp;&nbsp;</nobr></a>
+                         
+                    
+                    
+                    
+                        
+                        <span class="curPage">1</span>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=20">2</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=40">3</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=60">4</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=80">5</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=100">6</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=120">7</a>
+                        
+                    
+                        
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=140">8</a>
+                        
+                    
+                    
+                        <a href="/defaultroot/SInformAction.do?action=init&type=1&pager.offset=160"><img src="/defaultroot/images/nextpage.gif" border=0></a>
+                    
+                    
+                        
+                        &nbsp;&nbsp;第&nbsp;<font color="red">1</font>/1978&nbsp;页
+                       共&nbsp;39548&nbsp;条记录&nbsp;&nbsp;
+                    
+                    
+                    
+                    
+					
+
+		</td>
+	</tr>
+</table>
+
+</table>
+</td></tr>
+<tr valign="top"><td align=right><br></td></tr>
+</table><br>
+<font size="2">
+<input name="C" value="" type=hidden></font>
+<input name="DBPATH" value="/keryec/bulletin.nsf" type="hidden">
+</form>
+</body>
+</html>
+

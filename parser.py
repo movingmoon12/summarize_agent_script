@@ -318,17 +318,21 @@ def _build_positioned_text(
         # 没有子元素的情况：直接用 text_content 兜底
         return _fallback_positioned_text(content_elem, images, tables, attachments_meta)
 
-    # ——— 2. 替换 <img> → [图片: url] ———
+    # ——— 2. 替换 <img> → [图片N] 占位符（URL 不过 LLM） ———
+    # 设计理由：
+    #   LLM 只负责文本摘要，URL 应留在结构化数据（images 列表）中不动。
+    #   正文中只嵌入 [图片1]、[图片2] 编号占位符，让 LLM 感知图片位置但不接触 URL。
+    #   main.py 生成 Markdown 报告时，按编号从 images 列表取回真实 URL 拼接。
     # 使用计数器与 images 列表一一配对（两者均为文档序，保证顺序一致）
     img_idx = [0]
 
     def _replace_img(match: re.Match) -> str:
         if img_idx[0] < len(images):
-            src = images[img_idx[0]]["src"]
             alt = images[img_idx[0]].get("alt", "")
             img_idx[0] += 1
+            idx = img_idx[0]  # 1-based，与 images 列表索引对应
             alt_suffix = f" ({alt})" if alt else ""
-            return f"\n\n[图片{alt_suffix}: {src}]\n\n"
+            return f"\n\n[图片{idx}{alt_suffix}]\n\n"
         return ""
 
     inner_html = re.sub(r"<img[^>]*/?>", _replace_img, inner_html)
@@ -342,7 +346,7 @@ def _build_positioned_text(
             tbl_idx[0] += 1
             return f"\n\n[表格]\n{md}\n\n"
         # 非数据表（如含图片的排版用 <table>）→ 剥掉表格标签，保留内容
-        # 避免把上一步已插入的 [图片: ...] 标记一起清空
+        # 避免把上一步已插入的 [图片N] 标记一起清空
         content = match.group(0)
         content = re.sub(r"</?table[^>]*>", "", content, flags=re.IGNORECASE)
         content = re.sub(r"</?(?:tbody|thead|tfoot|colgroup|tr|td|th)[^>]*>", "", content, flags=re.IGNORECASE)
@@ -388,9 +392,9 @@ def _fallback_positioned_text(
 
     if images:
         text += "\n\n[图片]"
-        for img in images:
+        for i, img in enumerate(images, 1):
             alt = f" ({img['alt']})" if img.get("alt") else ""
-            text += f"\n- {img['src']}{alt}"
+            text += f"\n- [图片{i}]{alt}"
 
     if tables:
         for i, tbl in enumerate(tables):
@@ -482,24 +486,78 @@ def detect_images(tree) -> list[dict]:
 # HTML 表格 → Markdown 表格（逐行逐列有序提取，不碾平结构）
 # =============================================================================
 
+def _normalize_table_grid(table_elem) -> list[list[str]]:
+    """
+    将 HTML 表格转换为标准化的二维网格，填充 rowspan/colspan 覆盖的单元格。
+
+    学校 CMS 的表格常常使用 rowspan 合并单元格（如"日期"列跨多行，
+    或"参与对象"列跨多场活动）。如果逐 <tr> 逐 <td> 直接提取，
+    合并行之后的 <tr> 里会少 <td>，导致列错位——本来是 5 列表格，
+    第二数据行只有 2 列，Markdown 表格直接塌掉。
+
+    算法：
+      1. 用坐标集合 occupied: {(row, col), ...} 记录所有被占用的位置。
+      2. 遍历每行每格，按 rowspan/colspan 标记其覆盖的所有坐标，
+         所有坐标共享同一个 cell_text。
+      3. 最后按 max_row × max_col 重建完整网格，
+         未被标记的坐标填空字符串（理论上不应该出现，但兜底）。
+
+    Args:
+        table_elem: lxml HtmlElement（单个 <table> 元素）
+
+    Returns:
+        标准化二维列表，每行等宽，rowspan 单元格在后续行中重复填充
+    """
+    all_rows = table_elem.xpath(".//tr")
+    if not all_rows:
+        return []
+
+    occupied = set()       # {(row, col), ...} 已被占用的所有坐标
+    cell_data = {}         # {(row, col): text} 每个坐标的文本
+
+    for r, tr in enumerate(all_rows):
+        c = 0
+        for cell in tr.xpath("./td | ./th"):
+            # 跳过已被上一行 rowspan 占用的列位置
+            while (r, c) in occupied:
+                c += 1
+
+            text = cell.text_content().strip()
+            rowspan = int(cell.get("rowspan", 1))
+            colspan = int(cell.get("colspan", 1))
+
+            # 将此格覆盖的所有 (row, col) 坐标标记为已占用并填入相同文本
+            for rr in range(r, r + rowspan):
+                for cc in range(c, c + colspan):
+                    occupied.add((rr, cc))
+                    cell_data[(rr, cc)] = text
+
+            c += colspan
+
+    if not occupied:
+        return []
+
+    max_row = max(pos[0] for pos in occupied)
+    max_col = max(pos[1] for pos in occupied)
+
+    # 重建完整网格
+    grid = []
+    for r in range(max_row + 1):
+        row = [cell_data.get((r, c), "") for c in range(max_col + 1)]
+        grid.append(row)
+
+    return grid
+
+
 def extract_tables(content_elem) -> list[str]:
     """
-    在正文容器内检测 HTML <table>，逐行逐列提取单元格文本，
-    转换为 Markdown 格式的表格字符串。
+    在正文容器内检测 HTML <table>，转换为 Markdown 表格字符串。
 
-    XPath 选取逻辑：
-      1. .//table 定位正文内所有表格（相对路径，只搜正文容器后代）
-      2. ./tr 或 .//tr 遍历每一行（含 thead/tbody 嵌套）
-      3. ./td | ./th 提取每个单元格的 text_content()
-
-    设计理由：
-      直接用 text_content() 会把表格碾平为无分隔符的连续文本
-      （如 "姓名性别所在单位沈纲祥男电子信息学院"），完全不可读。
-      逐行逐列提取可以保留表格原有的二维结构。
-
-    兼容性：
-      - 自动跳过只有 1 行或 1 列的退化表格（可能是排版用表格）
-      - 单元格内嵌的 <span>、<p> 等通过 text_content() 拼接保留数字
+    流程：
+      1. .//table 定位正文内所有表格
+      2. 调用 _normalize_table_grid() 处理 rowspan/colspan，生成等宽二维网格
+      3. 过滤退化表格（只有 1 行或 1 列，可能是排版用 <table>）
+      4. 转换为 Markdown 表格
 
     Args:
         content_elem: lxml HtmlElement（正文容器元素）
@@ -509,22 +567,13 @@ def extract_tables(content_elem) -> list[str]:
     """
     md_tables = []
     for table_elem in content_elem.xpath(".//table"):
-        rows = []
-        # 遍历所有行（兼容 thead/tbody 嵌套）
-        for tr in table_elem.xpath(".//tr"):
-            cells = []
-            for cell in tr.xpath("./td | ./th"):
-                # text_content() 保留单元格内嵌套文本的数字和顺序
-                cell_text = cell.text_content().strip()
-                cells.append(cell_text)
-            if cells:
-                rows.append(cells)
+        grid = _normalize_table_grid(table_elem)
 
-        # 跳过退化表格（只有 1 行或 1 列的可能是分栏排版）
-        if len(rows) < 2 or (rows and len(rows[0]) < 2):
+        # 跳过退化表格
+        if len(grid) < 2 or (grid and len(grid[0]) < 2):
             continue
 
-        md_tables.append(_table_to_markdown(rows))
+        md_tables.append(_table_to_markdown(grid))
 
     return md_tables
 

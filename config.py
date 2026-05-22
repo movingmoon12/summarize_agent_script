@@ -234,6 +234,9 @@ REPORT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output", "reports")
 # 报告文件名格式：{date}_通知摘要报告.md
 REPORT_FILENAME_TEMPLATE = "{date}_通知摘要报告.md"
 
+# 全链路 Debug 数据输出目录（每次运行自动创建时间戳子目录）
+DEBUG_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output", "debug")
+
 # =============================================================================
 # 八、PDF 解析配置
 # =============================================================================
