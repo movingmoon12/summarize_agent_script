@@ -536,15 +536,15 @@ def main(target_date: date | None = None):
         print(f"  {report_path}")
         print(f"{'=' * 60}")
 
-        # # ===== Debug Dump: 全链路中间产出落盘 =====
-        # debug_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # debug_dir = Path(config.DEBUG_OUTPUT_DIR) / f"debug_{debug_ts}"
-        # debug_dir.mkdir(parents=True, exist_ok=True)
-        # try:
-        #     from debug_dump import dump_debug_info
-        #     dump_debug_info(debug_dir, type1_notices, type2_notices, target_date)
-        # except Exception as e:
-        #     print(f"  [警告] Debug 数据写入失败（不影响报告）: {e}")
+        # ===== Debug Dump: 全链路中间产出落盘 =====
+        debug_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_dir = Path(config.DEBUG_OUTPUT_DIR) / f"debug_{debug_ts}"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from debug_dump import dump_debug_info
+            dump_debug_info(debug_dir, type1_notices, type2_notices, target_date)
+        except Exception as e:
+            print(f"  [警告] Debug 数据写入失败（不影响报告）: {e}")
     except Exception:
         logging.getLogger("summarize_agent.main").exception("Phase 6: 报告生成严重错误")
         print(f"\n[严重错误] 报告生成失败，已生成兜底报告")
@@ -587,4 +587,4 @@ def _write_fallback_report(target_date: date, error_msg: str) -> None:
 # =============================================================================
 
 if __name__ == "__main__":
-    main()
+    main(date(2026, 5, 20))

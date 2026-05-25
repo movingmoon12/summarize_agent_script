@@ -187,13 +187,25 @@ def summarize_single(
             summary = choice.message.content
             finish_reason = choice.finish_reason
 
+            # 从 response.usage 提取 token 消耗明细（用于诊断空响应问题）
+            usage_info = ""
+            if hasattr(response, "usage") and response.usage:
+                u = response.usage
+                usage_info = (
+                    f"prompt_tokens={u.prompt_tokens}, "
+                    f"completion_tokens={u.completion_tokens}, "
+                    f"total_tokens={u.total_tokens}"
+                )
+
             if summary:
                 return summary.strip()
 
-            # 空响应：记录 finish_reason 再决定是否重试
+            # 空响应：记录 finish_reason + token 消耗，辅助定位根因
             logger.warning(
-                "LLM 返回空响应 finish_reason=%s (attempt %d/%d)",
+                "LLM 返回空响应 finish_reason=%s (attempt %d/%d) | model=%s | input_chars=%d | %s",
                 finish_reason, attempt + 1, max_retries + 1,
+                config.LLM_MODEL, len(user_message),
+                usage_info,
             )
             if finish_reason == "content_filter":
                 return "摘要生成失败：内容涉及安全限制，无法自动生成摘要，请点击原文链接查看"

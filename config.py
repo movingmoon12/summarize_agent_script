@@ -213,8 +213,10 @@ LLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 # 模型名称
 LLM_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-# LLM 调用的最大 token 数（摘要输出较短，512 足够）
-LLM_MAX_TOKENS = 512
+# LLM 调用的最大 token 数。
+# 注意：DeepSeek-v4 系列是推理模型，内部思维链 token 也计入此配额。
+# 实测 512 不够（推理链吃满 512，可见输出为零），设为 4096 确保有余量。
+LLM_MAX_TOKENS = 4096
 
 # LLM 温度参数（摘要任务需要确定性输出，设低值）
 LLM_TEMPERATURE = 0.3
